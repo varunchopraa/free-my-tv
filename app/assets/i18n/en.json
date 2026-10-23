@@ -16,6 +16,7 @@
  "Clear": "Clear",
  "Cloudy": "Cloudy",
  "Connecting…": "Connecting…",
+ "Continue": "Continue",
  "Couldn't check Free My TV: {error}": "Couldn't check Free My TV: {error}",
  "Couldn't go back to the original: {error}": "Couldn't go back to the original: {error}",
  "Couldn't open TV Settings": "Couldn't open TV Settings",
@@ -24,6 +25,7 @@
  "Couldn't turn on Free My TV: {error}": "Couldn't turn on Free My TV: {error}",
  "Crunchyroll button": "Crunchyroll button",
  "Crypto": "Crypto",
+ "Custom button": "Custom button",
  "Dark": "Dark",
  "Disney and Globoplay: the TV itself controls those buttons.": "Disney and Globoplay: the TV itself controls those buttons.",
  "Disney+ button": "Disney+ button",
@@ -112,6 +114,7 @@
  "Sunset {time}": "Sunset {time}",
  "Switching takes a few seconds; the screen blinks while it measures.": "Switching takes a few seconds; the screen blinks while it measures.",
  "Switching the home screen and screensaver…": "Switching the home screen and screensaver…",
+ "S{season} E{episode}": "S{season} E{episode}",
  "TCL Channel button": "TCL Channel button",
  "TCL remote buttons: on this TV they work as always.": "TCL remote buttons: on this TV they work as always.",
  "THIS AFTERNOON": "THIS AFTERNOON",
@@ -189,6 +192,7 @@
  "{n} MB": "{n} MB",
  "{n} h ago": "{n} h ago",
  "{n} min ago": "{n} min ago",
+ "{n} min left": "{n} min left",
  "{n} ms": "{n} ms",
  "← → to move · OK to drop · Back to cancel": "← → to move · OK to drop · Back to cancel"
 }
