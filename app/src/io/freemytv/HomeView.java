@@ -151,6 +151,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final RectF[] topRects = new RectF[TABS + HomeApps.MAX_TOP];
     private final Spring[] cardFocus = new Spring[CARDS];
     private final RectF[] cardRects = new RectF[CARDS];
+    /** How wide each card is: 1 = the wide one (the focused card, or the first), 0 = tall. */
+    private final Spring[] cardWide = new Spring[CARDS];
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
     private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lDate, lClock, lWeather, lClockQuote;
     private Shader lightGradient;
@@ -400,6 +402,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         for (int i = 0; i < CARDS; i++) {
             cardFocus[i] = new Spring(0.32f, 0.78f, 0);
+            cardWide[i] = new Spring(0.4f, 1f, i == 0 ? 1 : 0);
             cardRects[i] = new RectF();
         }
         setLightButtons(HomeApps.topButtons());
@@ -678,6 +681,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean statusMoving = step(statusFocus, dt);
         boolean heroMoving = heroFocus.step(dt);
         boolean topMoving = step(topFocus, dt), cardsMoving = step(cardFocus, dt);
+        if (step(cardWide, dt)) {
+            layoutCards();
+            cardsMoving = true;
+        }
         if (topMoving) status.invalidate();
         heroMoving |= topMoving | cardsMoving;
         boolean drawerItemsMoving = step(drawerFocus, dt);
@@ -1370,6 +1377,36 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * 11 that anti-aliased clip costs the GPU a mask on every frame of a focus animation (measured on a Mi Box 3: most of
      * a 49 ms frame), so there the image is the shader of a rounded rectangle instead, which looks the same.
      */
+    /** Like roundImage, but keeps the image's shape: the middle of it, as wide as the cell's shape allows. */
+    private void roundImageCropped(Canvas c, Bitmap image, RectF cell, float r) {
+        float iw = image.getWidth(), ih = image.getHeight();
+        float sw = Math.min(iw, ih * cell.width() / cell.height());
+        if (!Ui.LEGACY) {
+            clip.reset();
+            clip.addRoundRect(cell, r, r, Path.Direction.CW);
+            c.save();
+            c.clipPath(clip);
+            cropSrc.set(Math.round((iw - sw) / 2), 0, Math.round((iw + sw) / 2), (int) ih);
+            c.drawBitmap(image, cropSrc, cell, bitmapPaint);
+            c.restore();
+            return;
+        }
+        BitmapShader shader = imageShaders.get(image);
+        if (shader == null) {
+            shader = new BitmapShader(image, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            imageShaders.put(image, shader);
+        }
+        float scale = cell.height() / ih;
+        imageMatrix.setScale(scale, scale);
+        imageMatrix.postTranslate(cell.left - (iw - sw) / 2 * scale, cell.top);
+        shader.setLocalMatrix(imageMatrix);
+        imageFill.setShader(shader);
+        c.drawRoundRect(cell, r, r, imageFill);
+        imageFill.setShader(null);
+    }
+
+    private final Rect cropSrc = new Rect();
+
     private void roundImage(Canvas c, Bitmap image, RectF cell, float r) {
         if (!Ui.LEGACY) {
             clip.reset();
@@ -1751,6 +1788,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (snap) heroFocus.snap(heroFocus.target);
         boolean topChanged = aim(topFocus, !sheetOpen && zone == Z_TOP ? topIndex : -1, snap);
         heroChanged |= aim(cardFocus, !sheetOpen && zone == Z_CARDS ? cardIndex : -1, snap) | topChanged;
+        // The focused card is the wide one; with the focus elsewhere, the first.
+        if (aim(cardWide, !sheetOpen && zone == Z_CARDS ? cardIndex : 0, snap)) {
+            heroChanged = true;
+            if (snap) layoutCards();
+        }
         statusChanged |= topChanged;
         tilesDirty |= snap || tilesChanged;
         statusDirty |= snap || statusChanged;
@@ -2747,11 +2789,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             topRects[TABS + i].set(right - b, cy - b / 2, right, cy + b / 2);
             right -= b + L_BUTTON_GAP * k;
         }
-        float top = L_CARDS_TOP * k, ch = L_CARD_H * k, g = L_CARD_GAP * k, left = MARGIN * k, tall = L_TALL_W * k;
-        float wide = (CONTENT_R - MARGIN) * k - (CARDS - 1) * (tall + g);
-        cardRects[0].set(left, top, left + wide, top + ch);
-        for (int i = 1; i < CARDS; i++) cardRects[i].set(cardRects[i - 1].right + g, top, cardRects[i - 1].right + g + tall, top + ch);
+        layoutCards();
         heroDirty = statusDirty = true;
+    }
+
+    /** The cards in a row: each tall, plus its share of the wide card's extra width (cardWide, normalized so the row always fills the width). */
+    private void layoutCards() {
+        float top = L_CARDS_TOP * k, ch = L_CARD_H * k, g = L_CARD_GAP * k, tall = L_TALL_W * k;
+        float extra = (CONTENT_R - MARGIN) * k - CARDS * tall - (CARDS - 1) * g, sum = 0;
+        for (Spring w : cardWide) sum += Math.max(0, w.value);
+        float x = MARGIN * k;
+        for (int i = 0; i < CARDS; i++) {
+            float w = tall + (sum > 0 ? extra * Math.max(0, cardWide[i].value) / sum : i == 0 ? extra : 0);
+            cardRects[i].set(x, top, x + w, top + ch);
+            x += w + g;
+        }
     }
 
     /** The cards of the current tab (Continue, Explore, Movies, Shows) and the background taken from the first one. */
@@ -2905,9 +2957,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep);
         c.restore();
         Backdrop b = p == null ? null : recs.backdrop(p);
-        Bitmap img = b == null ? null : (i == 0 ? b.wide : b.tall);
+        Bitmap img = b == null ? null : b.wide;
         if (img != null) {
-            roundImage(c, img, cell, r);
+            roundImageCropped(c, img, cell, r);   // the middle of the wide photo: a tall card is its center
         } else {
             fill.setShader(null);
             fill.setColor(tone(0xFFDADADF, 0xFF2C2C2E));
@@ -2944,9 +2996,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (p == null) return;
         fitPaint.set(lCardTitle);
         c.drawText(TextUtils.ellipsize(p.title, fitPaint, bw, TextUtils.TruncateAt.END).toString(), base.left, base.bottom + 46 * k, lCardTitle);
-        if (i == 0 && p.meta != null && !p.meta.isEmpty()) {
+        float wide = Ui.clamp(cardWide[i].value);
+        if (wide > 0.02f && p.meta != null && !p.meta.isEmpty()) {
             fitPaint.set(lCardMeta);
+            int alpha = lCardMeta.getAlpha();
+            lCardMeta.setAlpha(Math.round(alpha * wide * wide));   // fades out quickly as the card narrows
             c.drawText(TextUtils.ellipsize(p.meta, fitPaint, bw, TextUtils.TruncateAt.END).toString(), base.left, base.bottom + 80 * k, lCardMeta);
+            lCardMeta.setAlpha(alpha);
         }
     }
 
