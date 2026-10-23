@@ -130,6 +130,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     });
     private final RectF a11yRect = new RectF();
     private final Layer sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, toastLayer;
+    // Photo swaps (a new tab or pick): the shelf's glass is drawn once with the new photo in platterNext, which fades in
+    // over platter, instead of running the glass shader on every frame of the fade (a Mali-G31 took ~55 ms a frame).
+    private final Layer platterNext;
+    private boolean platterFade;
+    private float glassMixNow;
     private int zone = Z_SHELF;
 
     // Night look (like Apple's "Automatic" appearance): darker from sunset to sunrise, with a 2 s transition.
@@ -322,7 +327,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 case SKY: drawSky(c); break;
                 case HERO: drawLightTop(c); break;
                 case STATUS: drawLightButtons(c); break;
-                case PLATTER: drawPlatter(c); break;
+                case PLATTER:
+                    // During a swap: the old photo in platter, the new one in platterNext (the shader keeps the mix
+                    // it was drawn with).
+                    if (platterFade) scene.setGlassMix(this == platterNext ? 1 : 0);
+                    drawPlatter(c);
+                    if (platterFade) scene.setGlassMix(glassMixNow);
+                    break;
                 case TILES: drawTiles(c); break;
                 case DRAWER: drawDrawer(c); break;
                 case SHEET: drawSheet(c); break;
@@ -381,6 +392,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         heroLayer = new Layer(a, HERO);
         status = new Layer(a, STATUS);
         platter = new Layer(a, PLATTER);
+        platterNext = new Layer(a, PLATTER);
         tiles = new Layer(a, TILES);
         drawerLayer = new Layer(a, DRAWER);
         sheetLayer = new Layer(a, SHEET);
@@ -389,13 +401,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Not on Android 8 to 11: on older GPUs (a Mi Box 3's Mali-450) redrawing and compositing a big layer on every
         // frame cost more than drawing straight to the screen (measured: focus on the picks 33 → 12 ms a frame, the
         // drawer 19 → 17 ms).
-        for (View v : new View[] {heroLayer, status, platter, tiles, drawerLayer, sheetLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
-        for (View v : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, toastLayer}) {
+        for (View v : new View[] {heroLayer, status, platter, platterNext, tiles, drawerLayer, sheetLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
+        for (View v : new View[] {sky, heroLayer, status, platter, platterNext, tiles, drawerLayer, sheetLayer, toastLayer}) {
             v.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);   // TalkBack reads the items (Spoken)
             addView(v);
         }
         setContentDescription("Free My TV");
         drawerLayer.setVisibility(INVISIBLE);
+        platterNext.setVisibility(INVISIBLE);
         for (int i = 0; i < topFocus.length; i++) {
             topFocus[i] = new Spring(0.26f, 0.85f, 0);
             topRects[i] = new RectF();
@@ -549,6 +562,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
         // cheaper for the GPU to composite on every frame of the drawer animation.
         measure(platter, width, Math.round(320 * kk));
+        measure(platterNext, width, Math.round(320 * kk));
         measure(tiles, width, Math.round(270 * kk));
         measure(drawerLayer, width, Math.round(600 * kk));
         measure(sheetLayer, width, height);
@@ -567,6 +581,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         place(heroLayer, 0, 0);
         place(status, width - status.getMeasuredWidth(), 0);
         place(platter, 0, Math.round(750 * kk));
+        place(platterNext, 0, Math.round(750 * kk));
         place(tiles, 0, Math.round(790 * kk));
         place(drawerLayer, 0, Math.round(470 * kk));
         sheetLayer.layout(0, 0, width, height);
@@ -707,7 +722,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (drawerItemsMoving || drawerDirty || bgFading) drawerLayer.invalidate();
         if (gridMoving || gridDirty) sheetLayer.invalidate();
         if (drawerMoving || bgFading) sky.invalidate();
-        if (bgFading || (drawerWasMoving && !drawerMoving)) platter.invalidate();
+        if ((bgFading && !platterFade) || (drawerWasMoving && !drawerMoving)) platter.invalidate();
         drawerWasMoving = drawerMoving;
         tilesDirty = statusDirty = heroDirty = drawerDirty = gridDirty = motionDirty = false;
         if (updateClock()) {
@@ -752,6 +767,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         show(heroLayer, top, lift);
         show(status, top, lift);
         show(platter, home, lift);
+        showPlatterNext();
         show(tiles, home, lift);
         float da = home * smoothstep(0.1f, 0.6f, dc);
         drawerLayer.setTranslationY((1 - d) * shift);
@@ -762,6 +778,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float scale = 1.04f - 0.04f * s;
         sheetLayer.setScaleX(scale);
         sheetLayer.setScaleY(scale);
+    }
+
+    /** The new photo's shelf glass, over the old one by as much as the photo swap has gone (only while it lasts). */
+    private void showPlatterNext() {
+        platterNext.setTranslationY(platter.getTranslationY());
+        platterNext.setAlpha(platter.getAlpha() * Ui.clamp(glassMixNow));
+        platterNext.setVisibility(platterFade && platter.getVisibility() == VISIBLE ? VISIBLE : INVISIBLE);
     }
 
     private static void show(View v, float alpha, float translationY) {
@@ -881,9 +904,23 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (bgFrom == null || glassOf(bgFrom) == null) {
             scene.setFrost(frostOf(b));
             scene.setGlassImage(glassOf(b));
+            endPlatterFade();
         } else {
             scene.setGlassImages(glassOf(bgFrom), glassOf(b));
+            // Android 8 to 11 have no glass shader (a flat fill) and no layers: they keep redrawing it as before.
+            platterFade = !Ui.LEGACY;
+            glassMixNow = 0;
+            platter.invalidate();       // the old photo (it may have been mid-swap)
+            platterNext.invalidate();   // the new one, faded in by tickBackgroundFade
+            showPlatterNext();
         }
+    }
+
+    private void endPlatterFade() {
+        if (!platterFade) return;
+        platterFade = false;
+        platter.invalidate();           // once more, with the new photo
+        showPlatterNext();
     }
 
     /** What the glass shows: the photo lightened (by day), darkened (at night) or blended in between. */
@@ -1007,16 +1044,20 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 scene.setFrost(frostMix);
             }
             scene.setGlassMix(e);
+            glassMixNow = e;
+            if (platterFade) showPlatterNext();
         }
         if (e >= 1) {
             bgFadeAt = 0;
             bgFrom = null;
+            glassMixNow = 1;
             if (bgTo == null) {
                 neutralGlass();
             } else {
                 scene.setFrost(frostOf(bgTo));
                 if (glassOf(bgTo) != null) scene.setGlassImage(glassOf(bgTo));
             }
+            endPlatterFade();
         }
         return true;
     }
